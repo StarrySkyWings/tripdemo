@@ -22,7 +22,9 @@ class myRequest {
       return res
     },err => {
       mainStore.isLoading = false
-      return err
+      // 必须 reject：若直接 return err，promise 会变成 fulfilled，
+      // 调用方拿到的 res 是 AxiosError，读 res.data 会报 "Cannot read properties of undefined"
+      return Promise.reject(err)
     })
   }
 

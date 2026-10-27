@@ -33,7 +33,23 @@ async function proxyApi(request) {
     init.body = await request.arrayBuffer();
   }
 
-  const upstreamResponse = await fetch(target, init);
+  let upstreamResponse;
+  try {
+    upstreamResponse = await fetch(target, init);
+  } catch (error) {
+    // 上游连不上时返回结构化错误，方便定位（例如端口被 Cloudflare 忽略）
+    return withCORS(
+      new Response(
+        JSON.stringify({
+          errcode: 502,
+          errmsg: "upstream fetch failed: " + error.message,
+          data: null,
+        }),
+        { status: 502, headers: { "Content-Type": "application/json; charset=utf-8" } }
+      )
+    );
+  }
+
   const proxied = new Response(upstreamResponse.body, {
     status: upstreamResponse.status,
     headers: {

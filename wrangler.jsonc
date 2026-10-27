@@ -3,6 +3,7 @@
   "name": "tripdemo",
   "main": "worker/index.js",
   "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["allow_custom_ports"],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS"

@@ -6,7 +6,7 @@
 
 | 文件 | 作用 |
 | --- | --- |
-| `wrangler.jsonc` | Worker 配置：`name=vuestay-trip`，入口 `worker/index.js`，静态资源目录 `./dist`，绑定 `ASSETS` |
+| `wrangler.jsonc` | Worker 配置：`name=tripdemo`，入口 `worker/index.js`，静态资源 `./dist`，绑定 `ASSETS`，并开启 `allow_custom_ports` |
 | `worker/index.js` | Worker 入口：`/api/**` 转发到后端，其余请求交给静态资源 |
 | `src/services/request/config.js` | `BASE_URL` 改为相对路径 `/api`（彻底避免跨域与混合内容） |
 | `vite.config.js` | 给 dev / preview 加 `/api` 代理，本地开发行为不变 |
@@ -34,6 +34,21 @@ Cloudflare 站点强制 HTTPS，`https` 页面里发 `http` 请求会被浏览�
 `package.json` 的 `engines` 要求 `^22.18.0 || >=24.12.0`，Vite 8 也要 Node 22。若构建机上 Node 太低会失败。已在 `.node-version` 声明；若构建日志仍报版本错，在 Cloudflare 的构建设置里加环境变量 `NODE_VERSION=22`。
 
 **好消息**：项目用的是 `createWebHashHistory`（哈希路由），所有页面都在 `/` 下，**不需要配 SPA 回退规则**。
+
+**坑三：Workers 会吃掉自定义端口（本项目真实踩中，已修）**
+
+Cloudflare Workers 的 `fetch()` **默认忽略 URL 里的自定义端口**，除非开启 `allow_custom_ports` 兼容标志。实测链路：
+
+```
+Worker 请求 http://codercba.com:1888/api/...
+  → 端口被忽略，实际打到 http://codercba.com:80
+  → 80 返回 301 跳转到 https://codercba.com/
+  → 该域名 443 不通（000）
+  → fetch 抛错 → 500 → axios 报错 → 被拦截器吞掉
+  → 页面报 "Cannot read properties of undefined (reading 'data')"
+```
+
+解法：`wrangler.jsonc` 里加 `"compatibility_flags": ["allow_custom_ports"]`。已加上并验证部署成功。
 
 ---
 
