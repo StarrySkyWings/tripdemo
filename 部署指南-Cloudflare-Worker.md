@@ -12,6 +12,7 @@
 | `vite.config.js` | 给 dev / preview 加 `/api` 代理，本地开发行为不变 |
 | `.github/workflows/deploy.yml` | GitHub Actions 自动部署工作流（方案 B 用） |
 | `.node-version` | 声明 Node 22 |
+| `src/utils/bmap.js` + `index.html` | 百度地图 SDK 改为按需加载，不再用同步 `<script>` 阻塞首屏 |
 | `package.json` | 新增 `wrangler` 依赖与 `npm run deploy` 脚本 |
 
 已本地验证：`npm run build` 通过（3.4s，51 个产物文件）；`npx wrangler deploy --dry-run` 通过，正确识别到 51 个静态资源与 `env.ASSETS` 绑定。
@@ -157,3 +158,31 @@ CLOUDFLARE_API_TOKEN=xxx npm run deploy
 | 接口 502 / 超时 | 后端 `codercba.com:1888` 是教学接口，可能已下线；需要自建后端或换接口 |
 
 **回滚**：以上改动都在 Git 里，删掉 `wrangler.jsonc`、`worker/`、`.github/` 并把 `config.js` 的 `BASE_URL` 改回绝对地址即可恢复原样。
+
+---
+
+## 7. 首屏加载慢：原因与处理（已优化）
+
+自定义域名 `https://tripdemo.devstream.de5.net/` DNS 解析到 Cloudflare（104.21.30.214 / 172.67.173.240），HTML 本身边缘缓存 `CF-Cache-Status: HIT`，**慢的不是静态资源，是接口回源**。
+
+实测对照：
+
+| 请求 | 耗时 |
+| --- | --- |
+| 直连 `http://codercba.com:1888`（国内网络） | 0.27s |
+| 经 Cloudflare 边缘访问同一接口 | TTFB 5.7s，总计 7.0s |
+
+上游在国内，Cloudflare 边缘跨境回源一次要 5 秒以上；首页一开就要发 3 个请求（hotSuggests / categories / houselist），用户自然要干等。
+
+两处优化：
+
+1. **Worker 层缓存接口**（`worker/index.js`）：GET 响应写入 Cloudflare Cache，TTL 10 分钟，并回写 `X-Worker-Cache: HIT / MISS` 头。教学接口数据是静态的，缓存完全安全。首次访问回源一次，之后边缘直出。
+2. **百度地图 SDK 按需加载**（`src/utils/bmap.js`）：原先 `index.html` 里是同步 `<script>`，会阻塞 HTML 解析、拖慢 Vue 挂载。改为详情页 `onMounted` 与首页定位点击时动态注入，失败只降级显示「地图加载失败」，不影响页面。顺带把首页定位超时从 1s 改成 8s（1s 基本必失败）。
+
+验证缓存是否生效：
+
+```bash
+curl -I https://tripdemo.devstream.de5.net/api/home/hotSuggests
+```
+
+第二次起应看到 `x-worker-cache: HIT`，且耗时降到百毫秒级。

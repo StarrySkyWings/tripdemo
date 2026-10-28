@@ -1,8 +1,12 @@
 // Cloudflare Worker 入口
-// 1) /api/**  → 转发到后端真实地址（后端只有 http，浏览器 https 页面直连会被拦截）
+// 1) /api/**  → 转发到后端真实地址，并在边缘缓存 GET 结果
 // 2) 其他请求 → 交给绑定的静态资源（Vite 构建产物 dist）
+//
+// 为什么必须缓存：上游 codercba.com:1888 在国内，Cloudflare 边缘跨境回源一次要 5s+，
+// 首页一开就要发 3 个请求，不缓存的话用户每次都得干等。
 
 const UPSTREAM = "http://codercba.com:1888";
+const CACHE_TTL_SECONDS = 600;
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -11,18 +15,26 @@ const CORS_HEADERS = {
 };
 
 function withCORS(response) {
-  const newResponse = new Response(response.body, response);
+  const next = new Response(response.body, response);
   for (const [key, value] of Object.entries(CORS_HEADERS)) {
-    newResponse.headers.set(key, value);
+    next.headers.set(key, value);
   }
-  return newResponse;
+  return next;
 }
 
-async function proxyApi(request) {
-  if (request.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: CORS_HEADERS });
-  }
+function jsonError(message, status = 502) {
+  return withCORS(
+    new Response(
+      JSON.stringify({ errcode: status, errmsg: message, data: null }),
+      {
+        status,
+        headers: { "Content-Type": "application/json; charset=utf-8" },
+      }
+    )
+  );
+}
 
+async function fetchUpstream(request) {
   const url = new URL(request.url);
   const target = UPSTREAM + url.pathname + url.search;
 
@@ -33,41 +45,62 @@ async function proxyApi(request) {
     init.body = await request.arrayBuffer();
   }
 
-  let upstreamResponse;
   try {
-    upstreamResponse = await fetch(target, init);
+    return await fetch(target, init);
   } catch (error) {
-    // 上游连不上时返回结构化错误，方便定位（例如端口被 Cloudflare 忽略）
-    return withCORS(
-      new Response(
-        JSON.stringify({
-          errcode: 502,
-          errmsg: "upstream fetch failed: " + error.message,
-          data: null,
-        }),
-        { status: 502, headers: { "Content-Type": "application/json; charset=utf-8" } }
-      )
-    );
+    return jsonError("upstream fetch failed: " + error.message);
   }
+}
 
-  const proxied = new Response(upstreamResponse.body, {
+function toProxied(upstreamResponse) {
+  return new Response(upstreamResponse.body, {
     status: upstreamResponse.status,
     headers: {
       "Content-Type":
         upstreamResponse.headers.get("Content-Type") ??
         "application/json; charset=utf-8",
-      "Cache-Control": "public, max-age=60",
+      "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
     },
   });
-  return withCORS(proxied);
+}
+
+async function proxyApi(request, ctx) {
+  if (request.method === "OPTIONS") {
+    return new Response(null, { status: 204, headers: CORS_HEADERS });
+  }
+
+  if (request.method !== "GET") {
+    return withCORS(toProxied(await fetchUpstream(request)));
+  }
+
+  const cache = caches.default;
+  const cacheKey = new Request(request.url, { method: "GET" });
+
+  const hit = await cache.match(cacheKey);
+  if (hit) {
+    const cached = new Response(hit.body, hit);
+    cached.headers.set("X-Worker-Cache", "HIT");
+    return withCORS(cached);
+  }
+
+  const upstreamResponse = await fetchUpstream(request);
+  if (upstreamResponse.ok) {
+    const toCache = toProxied(upstreamResponse.clone());
+    toCache.headers.set("X-Worker-Cache", "MISS");
+    ctx.waitUntil(cache.put(cacheKey, toCache.clone()));
+  }
+
+  const response = toProxied(upstreamResponse);
+  response.headers.set("X-Worker-Cache", "MISS");
+  return withCORS(response);
 }
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const { pathname } = new URL(request.url);
 
     if (pathname.startsWith("/api/")) {
-      return proxyApi(request);
+      return proxyApi(request, ctx);
     }
 
     return env.ASSETS.fetch(request);

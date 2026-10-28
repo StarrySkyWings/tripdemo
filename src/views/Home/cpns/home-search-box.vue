@@ -60,6 +60,7 @@ import useCityStore from '@/stores/modules/city'
 import useHomeStore from '@/stores/modules/home'
 import useMainStore from '@/stores/modules/main'
 import { formatMonthDay, getDiffDays } from '@/utils/format_date'
+import { loadBaiduMap } from '@/utils/bmap'
 import { storeToRefs } from 'pinia'
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
@@ -70,7 +71,14 @@ const router = useRouter()
 const cityClick = () => {
   router.push('/city')
 }
-const positionClick = () => {
+const positionClick = async () => {
+  try {
+    await loadBaiduMap()
+  } catch (err) {
+    alert('地图服务加载失败')
+    return
+  }
+  const BMap = window.BMap
   const geolocation = new BMap.Geolocation();
   geolocation.getCurrentPosition((result) => {
     if (geolocation.getStatus() === 0) {
@@ -79,7 +87,7 @@ const positionClick = () => {
     } else {
       alert('定位失败')
     }
-  }, { enableHighAccuracy: true, timeout: 1000 });
+  }, { enableHighAccuracy: true, timeout: 8000 });
 }
 const cityStore = useCityStore()
 const { currentCity } = storeToRefs(cityStore)
